@@ -1,0 +1,19 @@
+{
+    "name": "MapTool.Editor",
+    "rootNamespace": "MapTool.Editor",
+    "references": [
+        "MapTool.Core",
+        "MapTool.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

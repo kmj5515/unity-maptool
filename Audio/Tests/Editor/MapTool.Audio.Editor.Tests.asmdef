@@ -1,0 +1,34 @@
+{
+    "name": "MapTool.Audio.Editor.Tests",
+    "rootNamespace": "MapTool.Audio.Editor.Tests",
+    "references": [
+        "MapTool.Core",
+        "MapTool.Editor",
+        "MapTool.Audio.Editor",
+        "Audio",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "KMJ_AUDIO"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.kmj5515.audio",
+            "expression": "",
+            "define": "KMJ_AUDIO"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -1,0 +1,28 @@
+{
+    "name": "MapTool.Audio.Editor",
+    "rootNamespace": "MapTool.Audio.Editor",
+    "references": [
+        "MapTool.Core",
+        "MapTool.Editor",
+        "Audio"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "KMJ_AUDIO"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.kmj5515.audio",
+            "expression": "",
+            "define": "KMJ_AUDIO"
+        }
+    ],
+    "noEngineReferences": false
+}
