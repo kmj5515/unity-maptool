@@ -32,7 +32,9 @@ namespace MapTool.Editor
         private static readonly string[] ModeLabels = { "끄기", "선택", "배치", "브러시", "존", "스폰" };
 
         private const string AllCategories = "전체";
-        private const float TileSize = 72f;
+        /// <summary>타일 최소 크기. 창 너비를 이 크기로 나눈 만큼 열을 만들고, 남는 폭은 타일을 키워 채운다.</summary>
+        private const float MinTileSize = 72f;
+        private const float TileSpacing = 6f;
 
         private static readonly Color ValidColor = new(0.3f, 1f, 0.45f, 1f);
         private static readonly Color InvalidColor = new(1f, 0.3f, 0.3f, 1f);
@@ -49,6 +51,7 @@ namespace MapTool.Editor
         [SerializeField] private string search = "";
         [SerializeField] private string category = AllCategories;
         [SerializeField] private Vector2 paletteScroll;
+        [System.NonSerialized] private float paletteWidth;
         [SerializeField] private Vector3Int newMapSize = new(20, 4, 20);
         [SerializeField] private bool zoneFullHeight = true;
         [SerializeField] private int zoneHeight = 1;
@@ -379,17 +382,31 @@ namespace MapTool.Editor
                             d.Id.IndexOf(search, System.StringComparison.OrdinalIgnoreCase) >= 0)
                 .ToList();
 
-            int columns = Mathf.Max(1, (int)((position.width - 24f) / (TileSize + 6f)));
             bool loadingPreview = false;
 
             paletteScroll = EditorGUILayout.BeginScrollView(paletteScroll);
+
+            // 스크롤 뷰 안에서 실제로 쓸 수 있는 폭을 잰다(세로 스크롤바 유무 반영). Layout 이벤트의 값은 가짜라 Repaint 때만 갱신한다.
+            var widthProbe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
+            if (Event.current.type == EventType.Repaint && !Mathf.Approximately(widthProbe.width, paletteWidth))
+            {
+                paletteWidth = widthProbe.width;
+                Repaint();
+            }
+            float available = paletteWidth > 0f ? paletteWidth : position.width - 24f;
+
+            // 최소 크기로 열 수를 정하고, 남는 폭은 타일을 키워 채운다. 마지막 열의 오른쪽 끝이 폭 끝에 딱 맞는다.
+            int columns = Mathf.Max(1, (int)((available + TileSpacing) / (MinTileSize + TileSpacing)));
+            float tileSize = Mathf.Max(1f, (available - TileSpacing * (columns - 1)) / columns);
+            float labelHeight = EditorGUIUtility.singleLineHeight;
+
             for (int i = 0; i < items.Count; i += columns)
             {
-                using (new EditorGUILayout.HorizontalScope())
+                var row = GUILayoutUtility.GetRect(0f, tileSize + labelHeight + TileSpacing, GUILayout.ExpandWidth(true));
+                for (int j = i; j < Mathf.Min(i + columns, items.Count); j++)
                 {
-                    for (int j = i; j < Mathf.Min(i + columns, items.Count); j++)
-                        loadingPreview |= DrawTile(items[j]);
-                    GUILayout.FlexibleSpace();
+                    var cell = new Rect(row.x + (j - i) * (tileSize + TileSpacing), row.y, tileSize, tileSize + labelHeight);
+                    loadingPreview |= DrawTile(cell, items[j]);
                 }
             }
             EditorGUILayout.EndScrollView();
@@ -398,32 +415,30 @@ namespace MapTool.Editor
         }
 
         /// <returns>썸네일이 아직 로딩 중이면 true.</returns>
-        private bool DrawTile(MapObjectDefinition definition)
+        private bool DrawTile(Rect cell, MapObjectDefinition definition)
         {
             var preview = definition.Prefab != null ? AssetPreview.GetAssetPreview(definition.Prefab) : null;
             bool loading = definition.Prefab != null && preview == null && AssetPreview.IsLoadingAssetPreviews();
             var image = preview != null ? preview : AssetPreview.GetMiniThumbnail(definition);
 
-            using (new EditorGUILayout.VerticalScope(GUILayout.Width(TileSize)))
-            {
-                bool highlighted = mode == Mode.Brush ? brush.Contains(definition)
-                    : mode == Mode.Place && definition.Id == paletteSelection;
-                var previous = GUI.backgroundColor;
-                if (highlighted) GUI.backgroundColor = SelectColor;
+            bool highlighted = mode == Mode.Brush ? brush.Contains(definition)
+                : mode == Mode.Place && definition.Id == paletteSelection;
+            var previous = GUI.backgroundColor;
+            if (highlighted) GUI.backgroundColor = SelectColor;
 
-                var tooltip = definition.IsScatter
-                    ? $"{definition.Id} · 장식 · {(mode == Mode.Brush ? "클릭 = 브러시에 담기/빼기" : "클릭 = 브러시로 뿌리기")}"
-                    : $"{definition.Id} · {definition.Size.x}×{definition.Size.y}×{definition.Size.z}";
-                if (GUILayout.Button(new GUIContent(image, tooltip), GUILayout.Width(TileSize), GUILayout.Height(TileSize)))
-                    OnTileClicked(definition);
-                GUI.backgroundColor = previous;
+            var tooltip = definition.IsScatter
+                ? $"{definition.Id} · 장식 · {(mode == Mode.Brush ? "클릭 = 브러시에 담기/빼기" : "클릭 = 브러시로 뿌리기")}"
+                : $"{definition.Id} · {definition.Size.x}×{definition.Size.y}×{definition.Size.z}";
+            var tileRect = new Rect(cell.x, cell.y, cell.width, cell.width);
+            if (GUI.Button(tileRect, new GUIContent(image, tooltip)))
+                OnTileClicked(definition);
+            GUI.backgroundColor = previous;
 
-                var tileRect = GUILayoutUtility.GetLastRect();
-                if (mode == Mode.Brush && highlighted) DrawTileBadge(tileRect, "✓");
-                else if (mode != Mode.Brush && definition.IsScatter) DrawTileBadge(tileRect, "장식");
+            if (mode == Mode.Brush && highlighted) DrawTileBadge(tileRect, "✓");
+            else if (mode != Mode.Brush && definition.IsScatter) DrawTileBadge(tileRect, "장식");
 
-                GUILayout.Label(definition.name, EditorStyles.centeredGreyMiniLabel, GUILayout.Width(TileSize));
-            }
+            var labelRect = new Rect(cell.x, tileRect.yMax, cell.width, cell.height - cell.width);
+            GUI.Label(labelRect, definition.name, EditorStyles.centeredGreyMiniLabel);
             return loading;
         }
 
