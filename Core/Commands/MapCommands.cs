@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MapTool.Core
@@ -100,5 +101,139 @@ namespace MapTool.Core
         }
 
         internal override void Undo(PlacementService service) => service.AddObject(removed);
+    }
+
+    /// <summary>
+    /// 여러 오브젝트를 같은 거리만큼 함께 옮긴다. 회전과 서로의 간격은 그대로다.
+    /// 묶음끼리는 서로의 현재 자리를 빈 칸으로 보므로 A가 B의 옛 자리로 들어가도 된다.
+    /// 하나라도 못 놓으면 아무것도 옮기지 않는다.
+    /// </summary>
+    public sealed class MoveManyCommand : MapCommand
+    {
+        private readonly List<int> instanceIds;
+        private readonly Vector3Int offset;
+        private PlacedObject[] before;
+        private PlacedObject[] after;
+
+        public MoveManyCommand(IEnumerable<int> instanceIds, Vector3Int offset)
+        {
+            this.instanceIds = Distinct(instanceIds);
+            this.offset = offset;
+        }
+
+        internal override PlacementResult Do(PlacementService service)
+        {
+            if (instanceIds.Count == 0 || offset == Vector3Int.zero)
+                return PlacementResult.Fail(PlacementCodes.NothingToDo, "옮길 내용이 없습니다.");
+
+            var current = new PlacedObject[instanceIds.Count];
+            var moved = new PlacedObject[instanceIds.Count];
+            for (int i = 0; i < instanceIds.Count; i++)
+            {
+                if (!service.Map.TryGet(instanceIds[i], out current[i]))
+                    return PlacementResult.Fail(PlacementCodes.NotFound, $"오브젝트 #{instanceIds[i]}가 맵에 없습니다.");
+                moved[i] = current[i].WithPose(current[i].Cell + offset, current[i].Rotation);
+            }
+
+            var result = service.CanPlaceGroup(moved);
+            if (!result.IsValid) return result;
+
+            before = current;
+            after = moved;
+            // ReplaceObject는 자기 소유 셀만 비우므로 묶음 안에서 자리를 주고받아도 순서와 상관없이 점유가 맞는다.
+            for (int i = 0; i < after.Length; i++) service.ReplaceObject(before[i], after[i]);
+            return PlacementResult.Ok;
+        }
+
+        internal override void Undo(PlacementService service)
+        {
+            for (int i = after.Length - 1; i >= 0; i--) service.ReplaceObject(after[i], before[i]);
+        }
+
+        internal static List<int> Distinct(IEnumerable<int> ids)
+        {
+            var list = new List<int>();
+            var seen = new HashSet<int>();
+            if (ids != null)
+                foreach (var id in ids)
+                    if (seen.Add(id)) list.Add(id);
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// 여러 오브젝트를 한 번에 놓는다(복제 붙여넣기). 후보의 InstanceId는 무시하고 새로 받는다.
+    /// 후보끼리 겹치거나 하나라도 못 놓으면 아무것도 놓지 않는다.
+    /// </summary>
+    public sealed class PlaceManyCommand : MapCommand
+    {
+        private readonly PlacedObject[] candidates;
+        private PlacedObject[] placed;
+
+        public PlaceManyCommand(IEnumerable<PlacedObject> candidates)
+        {
+            var list = new List<PlacedObject>();
+            if (candidates != null)
+                foreach (var c in candidates)
+                    list.Add(new PlacedObject(0, c.DefinitionId, c.Cell, c.Rotation));
+            this.candidates = list.ToArray();
+        }
+
+        /// <summary>실행에 성공한 뒤 맵에 들어간 오브젝트들. 후보 순서와 같고 Redo해도 같은 InstanceId를 쓴다.</summary>
+        public IReadOnlyList<PlacedObject> Placed => placed ?? System.Array.Empty<PlacedObject>();
+
+        internal override PlacementResult Do(PlacementService service)
+        {
+            var result = service.CanPlaceGroup(placed ?? candidates);
+            if (!result.IsValid) return result;
+
+            if (placed == null)
+            {
+                placed = new PlacedObject[candidates.Length];
+                for (int i = 0; i < candidates.Length; i++)
+                {
+                    var c = candidates[i];
+                    placed[i] = new PlacedObject(service.Map.AllocateId(), c.DefinitionId, c.Cell, c.Rotation);
+                }
+            }
+            foreach (var p in placed) service.AddObject(p);
+            return PlacementResult.Ok;
+        }
+
+        internal override void Undo(PlacementService service)
+        {
+            for (int i = placed.Length - 1; i >= 0; i--) service.RemoveObject(placed[i]);
+        }
+    }
+
+    /// <summary>여러 오브젝트를 한 번에 지운다. 하나라도 맵에 없으면 아무것도 지우지 않는다.</summary>
+    public sealed class RemoveManyCommand : MapCommand
+    {
+        private readonly List<int> instanceIds;
+        private PlacedObject[] removed;
+
+        public RemoveManyCommand(IEnumerable<int> instanceIds) => this.instanceIds = MoveManyCommand.Distinct(instanceIds);
+
+        internal override PlacementResult Do(PlacementService service)
+        {
+            if (instanceIds.Count == 0)
+                return PlacementResult.Fail(PlacementCodes.NothingToDo, "지울 오브젝트가 없습니다.");
+
+            var found = new PlacedObject[instanceIds.Count];
+            for (int i = 0; i < instanceIds.Count; i++)
+            {
+                if (!service.Map.TryGet(instanceIds[i], out found[i]))
+                    return PlacementResult.Fail(PlacementCodes.NotFound, $"오브젝트 #{instanceIds[i]}가 맵에 없습니다.");
+            }
+
+            removed = found;
+            foreach (var r in removed) service.RemoveObject(r);
+            return PlacementResult.Ok;
+        }
+
+        internal override void Undo(PlacementService service)
+        {
+            for (int i = removed.Length - 1; i >= 0; i--) service.AddObject(removed[i]);
+        }
     }
 }

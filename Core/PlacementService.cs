@@ -88,14 +88,47 @@ namespace MapTool.Core
         }
 
         /// <summary>후보를 놓을 수 있는지 검사한다. 맵은 바꾸지 않는다. 기존 오브젝트의 이동 후보면 자기 자신과의 겹침은 무시한다.</summary>
-        public PlacementResult CanPlace(PlacedObject candidate)
+        public PlacementResult CanPlace(PlacedObject candidate) => CanPlace(candidate, null);
+
+        /// <summary>
+        /// 여러 후보를 한 번에 놓을 수 있는지 검사한다. 맵은 바꾸지 않는다.
+        /// InstanceId가 있는 후보(묶음 이동)는 서로의 현재 자리를 빈 칸으로 보고, 후보끼리 겹치면 실패한다.
+        /// </summary>
+        public PlacementResult CanPlaceGroup(IReadOnlyList<PlacedObject> candidates)
+        {
+            if (candidates == null || candidates.Count == 0)
+                return PlacementResult.Fail(PlacementCodes.NothingToDo, "놓을 오브젝트가 없습니다.");
+
+            var moving = new HashSet<int>();
+            foreach (var c in candidates)
+                if (c.InstanceId != 0) moving.Add(c.InstanceId);
+
+            var claimed = new Dictionary<Vector3Int, string>();
+            foreach (var candidate in candidates)
+            {
+                var result = CanPlace(candidate, moving);
+                if (!result.IsValid) return result;
+
+                // CanPlace가 통과했으니 정의는 있다.
+                TryGetBounds(candidate, out var bounds);
+                foreach (var cell in bounds.allPositionsWithin)
+                {
+                    if (claimed.TryGetValue(cell, out var other))
+                        return PlacementResult.Fail(PlacementCodes.Overlap, $"셀 {cell}에서 '{other}'와(과) '{candidate.DefinitionId}'가 서로 겹칩니다.");
+                    claimed.Add(cell, candidate.DefinitionId);
+                }
+            }
+            return PlacementResult.Ok;
+        }
+
+        private PlacementResult CanPlace(PlacedObject candidate, IReadOnlyCollection<int> movingIds)
         {
             if (!catalog.TryGet(candidate.DefinitionId, out var definition))
                 return PlacementResult.Fail(PlacementCodes.UnknownDefinition, $"정의 '{candidate.DefinitionId}'를 찾을 수 없습니다.");
             if (definition.Kind != PlacementKind.Grid)
                 return PlacementResult.Fail(PlacementCodes.WrongKind, $"'{definition.Id}'는 장식이라 칸에 놓을 수 없습니다. 브러시로 뿌려 주세요.");
 
-            var context = new PlacementContext(Map, occupancy, candidate, definition);
+            var context = new PlacementContext(Map, occupancy, candidate, definition, movingIds);
             foreach (var rule in rules)
             {
                 var result = rule.Check(context);

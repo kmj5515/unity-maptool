@@ -187,7 +187,7 @@ namespace MapTool.Editor
             if (!Execute(fix.Command).IsValid) return;
 
             // 지운 대상을 가리키던 선택을 푼다.
-            if (fix.Command is RemoveCommand && selectedId == issue.TargetId) selectedId = 0;
+            if (fix.Command is RemoveCommand && SelectedId == issue.TargetId) SelectedId = 0;
             if (fix.Command is RemoveZoneCommand)
             {
                 if (selectedZoneId == issue.TargetId) selectedZoneId = 0;
@@ -212,7 +212,7 @@ namespace MapTool.Editor
                 {
                     case IssueTarget.Object when HasObject(issue.TargetId):
                         SwitchModeForIssue(Mode.Select);
-                        selectedId = issue.TargetId;
+                        SelectedId = issue.TargetId;
                         break;
                     case IssueTarget.Zone when service.Map.TryGetZone(issue.TargetId, out _):
                         SwitchModeForIssue(Mode.Zone);

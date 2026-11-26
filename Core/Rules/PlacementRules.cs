@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MapTool.Core
@@ -48,12 +49,20 @@ namespace MapTool.Core
     public readonly struct PlacementContext
     {
         public PlacementContext(MapData map, OccupancyMap occupancy, PlacedObject candidate, ObjectDefinition definition)
+            : this(map, occupancy, candidate, definition, null)
+        {
+        }
+
+        /// <param name="movingIds">함께 옮기는 묶음의 InstanceId들. 이 오브젝트들이 지금 차지한 셀은 곧 비므로 겹침으로 보지 않는다.</param>
+        public PlacementContext(MapData map, OccupancyMap occupancy, PlacedObject candidate, ObjectDefinition definition,
+            IReadOnlyCollection<int> movingIds)
         {
             Map = map;
             Occupancy = occupancy;
             Candidate = candidate;
             Definition = definition;
             Bounds = candidate.GetBounds(definition);
+            MovingIds = movingIds;
         }
 
         public MapData Map { get; }
@@ -61,6 +70,20 @@ namespace MapTool.Core
         public PlacedObject Candidate { get; }
         public ObjectDefinition Definition { get; }
         public BoundsInt Bounds { get; }
+
+        /// <summary>묶음 이동일 때 함께 옮기는 InstanceId들. 단일 배치·이동이면 null.</summary>
+        public IReadOnlyCollection<int> MovingIds { get; }
+
+        /// <summary>이 오브젝트가 차지한 셀을 무시해도 되는지(자기 자신 또는 함께 옮기는 묶음).</summary>
+        public bool IsMoving(int instanceId) =>
+            (instanceId != 0 && instanceId == Candidate.InstanceId) || (MovingIds != null && Contains(MovingIds, instanceId));
+
+        private static bool Contains(IReadOnlyCollection<int> ids, int id)
+        {
+            if (ids is ICollection<int> collection) return collection.Contains(id);
+            foreach (var x in ids) if (x == id) return true;
+            return false;
+        }
     }
 
     /// <summary>배치 규칙 하나. PlacementService가 등록된 순서대로 검사하고 처음 실패한 결과를 돌려준다.</summary>
@@ -89,15 +112,14 @@ namespace MapTool.Core
         }
     }
 
-    /// <summary>다른 오브젝트가 점유한 셀과 겹치면 안 된다. 이동 중인 자기 자신은 무시한다.</summary>
+    /// <summary>다른 오브젝트가 점유한 셀과 겹치면 안 된다. 이동 중인 자기 자신(묶음 이동이면 묶음 전체)은 무시한다.</summary>
     public sealed class OverlapRule : IPlacementRule
     {
         public PlacementResult Check(in PlacementContext context)
         {
-            int self = context.Candidate.InstanceId;
             foreach (var cell in context.Bounds.allPositionsWithin)
             {
-                if (context.Occupancy.TryGetOccupant(cell, out var occupant) && occupant != self)
+                if (context.Occupancy.TryGetOccupant(cell, out var occupant) && !context.IsMoving(occupant))
                 {
                     // 사람이 읽는 메시지라 내부 번호 대신 정의 ID(기본값 = 팔레트에 보이는 에셋 이름)를 쓴다.
                     string what = context.Map.TryGet(occupant, out var other) ? $"'{other.DefinitionId}'" : $"오브젝트 #{occupant}";

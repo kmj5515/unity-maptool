@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using MapTool.Core;
 using UnityEditor;
@@ -65,10 +66,30 @@ namespace MapTool.Editor
         private GhostPreview ghost;
         private readonly MapToolShortcuts.Context shortcutContext = new();
 
-        private int selectedId;
+        // 선택한 오브젝트들(Ctrl+클릭으로 늘린다). 마지막 항목이 주 선택이고 정보 패널에 보인다.
+        private readonly List<int> selection = new();
+
+        /// <summary>주 선택. 대입하면 그 하나만 선택한다(0이면 선택 해제).</summary>
+        private int SelectedId
+        {
+            get => selection.Count > 0 ? selection[^1] : 0;
+            set
+            {
+                selection.Clear();
+                if (value != 0) selection.Add(value);
+            }
+        }
+
         private bool dragging;
+        // 드래그로 잡은 오브젝트. 묶음은 이 오브젝트가 움직인 만큼 함께 움직인다.
+        private int dragAnchorId;
         private Vector3Int dragOffset;
         private Vector3Int dragTarget;
+        // 드래그 중 마지막으로 규칙을 통과한 칸(잡은 오브젝트 기준). 빨간 칸에서 놓으면 취소 대신 여기로 옮긴다.
+        private Vector3Int dragLastValid;
+        // 묶음 안의 오브젝트를 Ctrl 없이 눌렀을 때: 끌지 않고 떼면 그 하나만 선택한다.
+        private int clickToSingle;
+
         private string status;
 
         private int selectedZoneId;
@@ -101,6 +122,7 @@ namespace MapTool.Editor
             EditorApplication.projectChanged += OnProjectChanged;
             EditorSceneManager.activeSceneChangedInEditMode += OnActiveSceneChanged;
             ShortcutManager.RegisterContext(shortcutContext);
+            if (map == null) map = FindMapInScene(SceneManager.GetActiveScene()) ?? LoadLastMap();
             LoadSession();
         }
 
@@ -120,6 +142,7 @@ namespace MapTool.Editor
             EndSession();
             catalog = EditorObjectCatalog.LoadAll();
             if (map == null) return;
+            RememberLastMap(map);
 
             service = new PlacementService(map.Data, catalog);
             layer = Mathf.Clamp(layer, 0, map.Data.Size.y - 1);
@@ -161,7 +184,7 @@ namespace MapTool.Editor
             spawnSync?.Dispose();
             spawnSync = null;
             service = null;
-            selectedId = 0;
+            SelectedId = 0;
             dragging = false;
             selectedZoneId = 0;
             zoneDragging = false;
@@ -189,8 +212,48 @@ namespace MapTool.Editor
 
         private void OnActiveSceneChanged(Scene from, Scene to)
         {
+            // 새 씬에 맵이 구워져 있으면 그 맵으로 바꾼다. 없으면 보던 맵을 유지한다.
+            var sceneMap = FindMapInScene(to);
+            if (sceneMap != null) map = sceneMap;
             LoadSession();
             Repaint();
+        }
+
+        // ───────────────────────── 맵 자동 선택 ─────────────────────────
+
+        private const string LastMapKey = "MapTool.LastMapGuid";
+
+        /// <summary>씬 루트의 "[MapTool] 이름" 오브젝트에서 맵 이름을 읽어 같은 이름의 MapAsset을 찾는다.</summary>
+        internal static MapAsset FindMapInScene(Scene scene)
+        {
+            if (!scene.IsValid() || !scene.isLoaded) return null;
+            foreach (var go in scene.GetRootGameObjects())
+            {
+                if (!go.name.StartsWith(MapSceneView.RootPrefix)) continue;
+                string mapName = go.name.Substring(MapSceneView.RootPrefix.Length);
+                foreach (string guid in AssetDatabase.FindAssets("t:MapAsset"))
+                {
+                    string path = AssetDatabase.GUIDToAssetPath(guid);
+                    if (System.IO.Path.GetFileNameWithoutExtension(path) != mapName) continue;
+                    var asset = AssetDatabase.LoadAssetAtPath<MapAsset>(path);
+                    if (asset != null) return asset;
+                }
+            }
+            return null;
+        }
+
+        // EditorUserSettings는 프로젝트별·사용자별(UserSettings 폴더, 버전 관리 제외)로 저장된다.
+        private static void RememberLastMap(MapAsset asset)
+        {
+            if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long _))
+                EditorUserSettings.SetConfigValue(LastMapKey, guid);
+        }
+
+        private static MapAsset LoadLastMap()
+        {
+            string guid = EditorUserSettings.GetConfigValue(LastMapKey);
+            if (string.IsNullOrEmpty(guid)) return null;
+            return AssetDatabase.LoadAssetAtPath<MapAsset>(AssetDatabase.GUIDToAssetPath(guid));
         }
 
         // ───────────────────────── 창 UI ─────────────────────────
@@ -338,16 +401,25 @@ namespace MapTool.Editor
 
             if (mode == Mode.Zone || mode == Mode.Brush || mode == Mode.Spawn) return; // 존·브러시·스폰 패널이 따로 보여 준다
 
-            if (selectedId == 0 || !service.Map.TryGet(selectedId, out var placed))
+            if (SelectedId == 0 || !service.Map.TryGet(SelectedId, out var placed))
             {
-                EditorGUILayout.LabelField("선택", mode == Mode.Select ? "씬뷰에서 오브젝트를 클릭하세요" : "-");
+                EditorGUILayout.LabelField("선택", mode == Mode.Select ? "씬뷰에서 오브젝트를 클릭하세요 (Ctrl+클릭: 여러 개)" : "-");
                 return;
             }
 
-            EditorGUILayout.LabelField("선택", $"#{placed.InstanceId} {placed.DefinitionId} · 셀 {placed.Cell} · {placed.Rotation.ToDegrees():0}°");
+            bool multi = selection.Count > 1;
+            if (multi)
+                EditorGUILayout.LabelField("선택", $"{selection.Count}개 · 주 선택 #{placed.InstanceId} {placed.DefinitionId}");
+            else
+                EditorGUILayout.LabelField("선택", $"#{placed.InstanceId} {placed.DefinitionId} · 셀 {placed.Cell} · {placed.Rotation.ToDegrees():0}°");
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("회전 (R)")) RotateAction();
+                using (new EditorGUI.DisabledScope(multi))
+                {
+                    var rotateLabel = new GUIContent("회전 (R)", multi ? "여러 개를 선택했을 때는 회전할 수 없습니다" : null);
+                    if (GUILayout.Button(rotateLabel)) RotateAction();
+                }
+                if (GUILayout.Button("복제 (Ctrl+D)")) DuplicateAction();
                 if (GUILayout.Button("삭제 (Del)")) DeleteAction();
             }
         }
@@ -448,7 +520,7 @@ namespace MapTool.Editor
         /// </summary>
         private void OnTileClicked(MapObjectDefinition definition)
         {
-            selectedId = 0;
+            SelectedId = 0;
             dragging = false;
             if (definition.IsScatter)
             {
@@ -555,7 +627,7 @@ namespace MapTool.Editor
                 else if (mode == Mode.Place) mode = Mode.Select;
                 else if (mode == Mode.Zone) selectedZoneId = 0;
                 else if (mode == Mode.Spawn) selectedSpawnId = 0;
-                else selectedId = 0;
+                else SelectedId = 0;
                 ghost.Hide();
                 e.Use();
                 Repaint();
@@ -601,54 +673,171 @@ namespace MapTool.Editor
             ghost.Hide();
             int hovered = hasCell && service.Occupancy.TryGetOccupant(cell, out var occupant) ? occupant : 0;
 
-            if (!dragging && hovered != 0 && hovered != selectedId &&
+            if (!dragging && hovered != 0 && !selection.Contains(hovered) &&
                 service.Map.TryGet(hovered, out var hoveredObject) && service.TryGetBounds(hoveredObject, out var hoverBounds))
                 DrawFootprint(hoverBounds, HoverColor);
 
             switch (e.type)
             {
+                case EventType.MouseDown when IsPrimary(e) && (e.control || e.command):
+                    // Ctrl(맥은 Cmd)+클릭: 선택에 넣거나 뺀다. 끌지는 않는다.
+                    GUIUtility.hotControl = controlId;
+                    if (hovered != 0 && !selection.Remove(hovered)) selection.Add(hovered);
+                    e.Use();
+                    Repaint();
+                    break;
+
                 case EventType.MouseDown when IsPrimary(e):
                     GUIUtility.hotControl = controlId;
-                    selectedId = hovered;
+                    clickToSingle = 0;
+                    if (hovered != 0 && selection.Count > 1 && selection.Contains(hovered))
+                    {
+                        // 묶음을 잡았다: 선택은 그대로 두고, 끌지 않고 떼면 그 하나만 남긴다.
+                        clickToSingle = hovered;
+                        selection.Remove(hovered);
+                        selection.Add(hovered); // 주 선택으로
+                    }
+                    else
+                    {
+                        SelectedId = hovered;
+                    }
+
                     if (hovered != 0 && service.Map.TryGet(hovered, out var grabbed))
                     {
                         dragging = true;
+                        dragAnchorId = hovered;
                         dragOffset = grabbed.Cell - cell;
                         dragTarget = grabbed.Cell;
+                        dragLastValid = grabbed.Cell;
                     }
                     e.Use();
                     Repaint();
                     break;
 
                 case EventType.MouseDrag when dragging && GUIUtility.hotControl == controlId:
-                    if (hasCell && service.Map.TryGet(selectedId, out var current))
+                    if (hasCell && service.Map.TryGet(dragAnchorId, out var anchor))
                     {
                         var target = cell + dragOffset;
-                        target.y = current.Cell.y; // 층은 유지하고 X/Z로만 옮긴다
+                        target.y = anchor.Cell.y; // 층은 유지하고 X/Z로만 옮긴다
+                        if (target != dragTarget) clickToSingle = 0;
                         dragTarget = target;
+                        if (service.CanPlaceGroup(MovedSelection(target - anchor.Cell)).IsValid) dragLastValid = target;
                     }
                     e.Use();
                     break;
 
                 case EventType.MouseUp when GUIUtility.hotControl == controlId:
                     GUIUtility.hotControl = 0;
-                    if (dragging && service.Map.TryGet(selectedId, out var moving) && dragTarget != moving.Cell)
-                        Execute(new MoveCommand(selectedId, dragTarget, moving.Rotation));
+                    if (dragging && service.Map.TryGet(dragAnchorId, out var moving) && dragLastValid != moving.Cell)
+                        Execute(new MoveManyCommand(selection, dragLastValid - moving.Cell));
+                    else if (clickToSingle != 0)
+                        SelectedId = clickToSingle;
+                    clickToSingle = 0;
                     dragging = false;
                     e.Use();
+                    Repaint();
                     break;
             }
 
-            if (dragging && service.Map.TryGet(selectedId, out var dragged))
+            if (dragging && service.Map.TryGet(dragAnchorId, out var dragged))
             {
-                var candidate = dragged.WithPose(dragTarget, dragged.Rotation);
-                var check = service.CanPlace(candidate);
-                if (service.TryGetBounds(candidate, out var bounds))
+                var moved = MovedSelection(dragTarget - dragged.Cell);
+                var check = service.CanPlaceGroup(moved);
+                DrawFootprints(moved, check.IsValid ? ValidColor : InvalidColor, check.IsValid ? null : check.Message);
+
+                // 빨간 칸 위에 있을 때는 놓으면 실제로 갈 자리를 함께 보여 준다.
+                if (!check.IsValid && dragLastValid != dragged.Cell)
+                    DrawFootprints(MovedSelection(dragLastValid - dragged.Cell), ValidColor, null);
+            }
+        }
+
+        /// <summary>선택한 오브젝트 전부를 delta만큼 옮긴 후보. 회전은 그대로다.</summary>
+        private List<PlacedObject> MovedSelection(Vector3Int delta)
+        {
+            var moved = new List<PlacedObject>(selection.Count);
+            foreach (var id in selection)
+                if (service.Map.TryGet(id, out var placed))
+                    moved.Add(placed.WithPose(placed.Cell + delta, placed.Rotation));
+            return moved;
+        }
+
+        /// <summary>후보들의 영역을 그린다. message가 있으면 첫 후보 위에 띄운다.</summary>
+        private void DrawFootprints(List<PlacedObject> candidates, Color color, string message)
+        {
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (!service.TryGetBounds(candidates[i], out var bounds)) continue;
+                DrawFootprint(bounds, color);
+                if (i == 0 && message != null) DrawFootprintLabel(bounds, message, color);
+            }
+        }
+
+        // ───────────────────────── 복제 ─────────────────────────
+
+        /// <summary>
+        /// Ctrl+D: 선택한 오브젝트들의 사본을 원본 바로 옆 빈자리에 즉시 놓고 사본을 선택한다.
+        /// 상대 위치·회전·층은 그대로이고, 원하는 곳으로는 이어서 끌어 옮기면 된다.
+        /// </summary>
+        internal void DuplicateAction()
+        {
+            if (!IsEditing || mode != Mode.Select || dragging || selection.Count == 0) return;
+            if (!service.Map.TryGet(SelectedId, out var primary)) return;
+
+            // 첫 항목이 주 선택. 사본도 같은 순서로 만들어 주 선택의 사본이 다시 주 선택이 되게 한다.
+            var sources = new List<PlacedObject> { primary };
+            foreach (var id in selection)
+                if (id != primary.InstanceId && service.Map.TryGet(id, out var placed))
+                    sources.Add(placed);
+
+            var candidates = FindNearestCopySpot(sources);
+            if (candidates == null)
+            {
+                ShowFailure(PlacementResult.Fail(PlacementCodes.Overlap, "근처에 복제할 빈자리가 없습니다."));
+                return;
+            }
+
+            var command = new PlaceManyCommand(candidates);
+            if (!Execute(command).IsValid) return;
+            selection.Clear();
+            for (int i = command.Placed.Count - 1; i >= 0; i--) selection.Add(command.Placed[i].InstanceId);
+            Repaint();
+            SceneView.RepaintAll();
+        }
+
+        /// <summary>
+        /// 같은 층에서 원본과 가장 가까운 평행 이동 자리를 찾는다. 거리가 같으면 +X, +Z, -Z, -X 순으로 고른다.
+        /// 놓을 곳이 없으면 null.
+        /// </summary>
+        private List<PlacedObject> FindNearestCopySpot(List<PlacedObject> sources)
+        {
+            var size = service.Map.Size;
+            int maxRing = Mathf.Max(size.x, size.z);
+            var candidates = new List<PlacedObject>(sources.Count);
+            var ring = new List<Vector3Int>();
+            for (int r = 1; r <= maxRing; r++)
+            {
+                ring.Clear();
+                for (int dx = -r; dx <= r; dx++)
+                for (int dz = -r; dz <= r; dz++)
+                    if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dz)) == r)
+                        ring.Add(new Vector3Int(dx, 0, dz));
+                ring.Sort((a, b) =>
                 {
-                    DrawFootprint(bounds, check.IsValid ? ValidColor : InvalidColor);
-                    if (!check.IsValid) DrawFootprintLabel(bounds, check.Message, InvalidColor);
+                    int c = (a.x * a.x + a.z * a.z).CompareTo(b.x * b.x + b.z * b.z);
+                    if (c != 0) return c;
+                    c = b.x.CompareTo(a.x);
+                    return c != 0 ? c : b.z.CompareTo(a.z);
+                });
+
+                foreach (var offset in ring)
+                {
+                    candidates.Clear();
+                    foreach (var source in sources)
+                        candidates.Add(new PlacedObject(0, source.DefinitionId, source.Cell + offset, source.Rotation));
+                    if (service.CanPlaceGroup(candidates).IsValid) return candidates;
                 }
             }
+            return null;
         }
 
         private void HandleZone(Event e, int controlId, bool hasCell, Vector3Int cell)
@@ -837,13 +1026,10 @@ namespace MapTool.Editor
 
         private void DrawSelected()
         {
-            if (selectedId == 0) return;
-            if (!service.Map.TryGet(selectedId, out var placed))
-            {
-                selectedId = 0;
-                return;
-            }
-            if (service.TryGetBounds(placed, out var bounds)) DrawFootprint(bounds, SelectColor);
+            selection.RemoveAll(id => !service.Map.TryGet(id, out _));
+            foreach (var id in selection)
+                if (service.Map.TryGet(id, out var placed) && service.TryGetBounds(placed, out var bounds))
+                    DrawFootprint(bounds, SelectColor);
         }
 
         private void DrawFootprint(BoundsInt bounds, Color color)
@@ -930,9 +1116,14 @@ namespace MapTool.Editor
                 Repaint();
                 SceneView.RepaintAll();
             }
-            else if (selectedId != 0 && service.Map.TryGet(selectedId, out var placed))
+            else if (selection.Count > 1)
             {
-                Execute(new MoveCommand(selectedId, placed.Cell, placed.Rotation.Clockwise()));
+                // 묶음 회전은 회전 축과 겹침 처리를 정해야 해서 아직 막아 둔다.
+                ShowFailure(PlacementResult.Fail(PlacementCodes.NothingToDo, "여러 개를 선택했을 때는 회전할 수 없습니다."));
+            }
+            else if (SelectedId != 0 && service.Map.TryGet(SelectedId, out var placed))
+            {
+                Execute(new MoveCommand(SelectedId, placed.Cell, placed.Rotation.Clockwise()));
             }
         }
 
@@ -952,8 +1143,8 @@ namespace MapTool.Editor
                 return;
             }
 
-            if (mode != Mode.Select || selectedId == 0) return;
-            if (Execute(new RemoveCommand(selectedId)).IsValid) selectedId = 0;
+            if (mode != Mode.Select || selection.Count == 0) return;
+            if (Execute(new RemoveManyCommand(selection)).IsValid) selection.Clear();
         }
 
         private void OnMapChanged()
@@ -961,7 +1152,7 @@ namespace MapTool.Editor
             status = null;
             EditorUtility.SetDirty(map);
             if (view?.Root != null) EditorSceneManager.MarkSceneDirty(view.Root.gameObject.scene);
-            if (selectedId != 0 && !service.Map.TryGet(selectedId, out _)) selectedId = 0;
+            selection.RemoveAll(id => !service.Map.TryGet(id, out _));
             if (selectedZoneId != 0 && !service.Map.TryGetZone(selectedZoneId, out _)) selectedZoneId = 0;
             if (selectedSpawnId != 0 && !service.Map.TryGetSpawn(selectedSpawnId, out _)) selectedSpawnId = 0;
             InvalidateValidation();

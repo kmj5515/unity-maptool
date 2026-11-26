@@ -48,5 +48,8 @@ namespace MapTool.Editor
 
         [Shortcut("Map Tool/Delete", typeof(Context), KeyCode.Delete)]
         private static void Delete() => MapToolWindow.Active?.DeleteAction();
+
+        [Shortcut("Map Tool/Duplicate", typeof(Context), KeyCode.D, ShortcutModifiers.Action)]
+        private static void Duplicate() => MapToolWindow.Active?.DuplicateAction();
     }
 }
