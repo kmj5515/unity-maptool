@@ -1,6 +1,6 @@
 {
   "name": "com.kmj5515.maptool",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "Map Tool",
   "description": "Grid-based level authoring tool for artists: place, scatter, zones, spawns, validation and JSON export. Core logic is engine-independent C# with EditMode tests. Audio zone authoring turns on automatically when com.kmj5515.audio is installed.\n\n격자 기반 맵 저작 툴(아티스트용): 배치·흩뿌리기·구역·스폰·검증·JSON 내보내기.",
   "unity": "6000.0",
